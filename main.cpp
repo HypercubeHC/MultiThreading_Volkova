@@ -13,13 +13,15 @@
 
 
 using namespace std;
-//инициализируем переменную с флагом остановки работы, чтобы останавливаться по Ctrl C
+//переменная с флагом остановки работы, чтобы останавливаться по Ctrl C
 bool stop = false;
 //обработчик Ctrl C
 BOOL WINAPI CtrlHandler(DWORD fdwCtrlType) {
     switch (fdwCtrlType)
     {
     case CTRL_C_EVENT:
+        //сигнал, применяемый в POSIX-системах для остановки процесса пользователем с терминала
+        //да да, очень умно)
         cout << "SIGINT signal received!" << endl;
         cout << "Stopping generator and all devices" << endl;
         cout.flush();
@@ -30,10 +32,12 @@ BOOL WINAPI CtrlHandler(DWORD fdwCtrlType) {
     }
 }
 
+//заявочка
 struct Request {
     int requestClass, type;
 };
 
+//один из способов генерировать случайные значения, взято из интернета отчасти
 unsigned int RandomBetween(const int nMin, const int nMax)
 {
     std::random_device seeder;
@@ -45,6 +49,8 @@ unsigned int RandomBetween(const int nMin, const int nMax)
     return dist(engine);
 }
 
+//один из способов очистки экрана, взято из интернета
+//я не эксперт, умные люди знают лучше меня как это делать красиво, а я питонист не бейте
 void clear_screen (void)
 {
     DWORD n;                         /* Number of characters written */
@@ -69,6 +75,7 @@ void clear_screen (void)
     SetConsoleCursorPosition ( h, coord );
 }
 
+//немного вспомогательной информации выводится в консоль, если данные были введены неправильно
 void printHelp(const std::string& name = ""){
     //печатаем информацию как пользоваться программой
     string help = "Usage: \n"
@@ -80,69 +87,78 @@ void printHelp(const std::string& name = ""){
     cout << help << endl;
 }
 
+//работа с очередью
 void Enqueue(vector<Request> &queue, Request &request) {
     if (queue.empty()) //если очередь пуста, просто добавляем в вектор заявку
-        queue.push_back(request);
+        queue.push_back(request); //формат заявки выше
     else { //иначе ищем линейным поиском, где начинается подмножество заявок текущего типа
         for (int index = 0; index < queue.size(); index++){
             if (queue[index].type < request.type) {
-                queue.insert(queue.begin() + index, request); //и вставляем заявку в его начало
+                queue.insert(queue.begin() + index, request); //и вставляем заявку в начало
                 break;
             }
         }
     }
 }
 
-
+//приборы
 void Device(int groupNumber, int threadId, vector<Request> &queue, mutex &queueMutex, vector<string> &status) {
+    //флаг для определения занятости
     bool isBusy = false; //сразу после создания прибор ещё не выполняет заявку
-    while (!stop) { //пока не нажали Ctrl C работаем
+    while (!stop) { //пока не нажали Ctrl C цикл выполняется
         isBusy = false;
         int type;
         string threadStatus;
-        queueMutex.lock(); //блокируем очередь на время поиска заявок
+        queueMutex.lock(); //блокируем очередь на время поиска заявок, чтобы ничего лишнего не случилось
         if (!queue.empty()) { //и проверяем не пуста ли очередь
             for (int i = 0; i < queue.size() && !isBusy; i++) { //последовательный поиск по очереди заявок
-                if (queue[i].requestClass == groupNumber) { // если нашлась заявка нужного типа - берём её и работаем
+                // если нашлась заявка нужного типа - берём её и обрабатываем
+                if (queue[i].requestClass == groupNumber) {
                     type = queue[i].type; //для отчёта о статусе сохраняем тип (приоритет) найденной заявки
                     queue.erase(queue.begin() + i); //удаляем заявку из очереди
-                    isBusy = true; //теперь прибор выполняет заявку
+                    isBusy = true; //далее прибор выполняет заявку
                 }
             }
         }
         queueMutex.unlock(); //разблокируем очередь
         //отчитываемся о статусе
+        int sleepTime = RandomBetween(64, 1024);
         threadStatus = "Device thread " + to_string(threadId);
-        threadStatus += isBusy ? " is working on task of type " + to_string(type) : " is vacant"; //тернарка
+        threadStatus += isBusy ? " is working on task of type " + to_string(type) + " for " + to_string(sleepTime) + " ms"
+                               : " is vacant"; //тернарка
         status[threadId] = threadStatus; //обновили статус прибора в векторе
-        this_thread::sleep_for(chrono::milliseconds(RandomBetween(64, 1024))); // поток прибора засыпает на случайное время
+        this_thread::sleep_for(chrono::milliseconds(sleepTime)); // поток прибора засыпает на случайное время
         // После окончания этого времени, прибор считается свободным (в начале цикла)
     }
 }
 
+//функция подготавливает заявки случайных типов для случайных классов
 Request prepareRequest(int groupsCount){
-    //функция подготавливает заявки случайных типов для случайных классов
     return Request {
         .requestClass = static_cast<int>(RandomBetween(0, groupsCount - 1)),
         .type = static_cast<int>(RandomBetween(1, 3)),
     };
 }
 
+
 void generator(int groupsCount, vector<Request> &queue, int &capacity, mutex &queueMutex, vector<string> &status) {
     while (!stop) {
         string generatorStatus;
         queueMutex.lock();//блокируем очередь на время проверок и добавления заявок
-        if (queue.size() < capacity) { //Генератор через случайные промежутки времени добавляет в очередь заявки из разных групп со случайным типов
+        //генератор через случайные промежутки времени добавляет в очередь заявки из разных групп со случайным типов
+        if (queue.size() < capacity) {
             Request request = prepareRequest(groupsCount); //подготовка заявки
             Enqueue(queue, request); //подготовленную заявку помещаем в очередь
             generatorStatus = to_string(queue.size()) + " request(s) in queue";
-        } // Генератор неактивен, если в очереди нет свободных мест
+        } //генератор неактивен, если в очереди нет свободных мест
         queueMutex.unlock(); //разблокируем очередь
-        status[status.size() - 1] = generatorStatus; //обновляем статус генератора в последнем элементе вектора со статусами
+        //обновляем статус генератора в последнем элементе вектора со статусами
+        status[status.size() - 1] = generatorStatus;
         this_thread::sleep_for(chrono::milliseconds(RandomBetween(16, 128)));
 
     }
 }
+
 
 void printQueue(mutex &queueMutex, const vector<Request> &queue) {
     cout << "\nQueue content:" << endl;
@@ -154,6 +170,7 @@ void printQueue(mutex &queueMutex, const vector<Request> &queue) {
     queueMutex.unlock();
 }
 
+
 void printStatus(int groupsCount, int deviceCount, const vector<string> &status) {
     for (int i = 0; i < groupsCount * deviceCount + 1; i++) {
         cout << status[i] << endl;
@@ -163,12 +180,15 @@ void printStatus(int groupsCount, int deviceCount, const vector<string> &status)
 
 int main(int argc, char *argv[]) {
     srand(time(0));
+    //было на русском, но CLion не может в русский, зато в дебаге может
     setlocale(LC_ALL, "rus");
+    //объявляем три параметра
     int capacity, groupsCount, deviceCount;
-    //считываем из аргументов параметры для программы
+    //считываем из аргументов параметры для программы, красевое
     capacity = argc > 1 ? atoi(argv[1]) : -1;
     groupsCount = argc > 2 ? atoi(argv[2]) : -1;
     deviceCount = argc > 3 ? atoi(argv[3]) : -1;
+    //нужно если задан формат '10 5 5 debug'
     bool DEBUG = argc > 4 && std::string(argv[4]) == "debug";
     //если что-то ввели не так, или не ввели, выводим сообщение и выходим
     if (capacity <= 0 || groupsCount < 2 || deviceCount < 2){
@@ -187,6 +207,7 @@ int main(int argc, char *argv[]) {
     vector<thread> deviceThread(groupsCount * deviceCount);
     for (int i = 0; i < groupsCount * deviceCount; i++) {
         //и создаём потоки устройств
+        //ref - это ссылка (для меня напоминание)
         deviceThread[i] = thread(Device, (int) i / deviceCount, i, ref(queue), ref(queueMutex), ref(status));
     }
     //создаём генератор
